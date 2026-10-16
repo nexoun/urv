@@ -332,21 +332,16 @@ android {
         !keystoreEntryAlias.isNullOrBlank() &&
         !keystoreEntryPassword.isNullOrBlank()
     val signAsDebug = project.hasProperty("signAsDebug")
-    if (System.getenv("CI").toBoolean() && !signAsDebug && !hasReleaseSigningCredentials) {
-        throw GradleException(
-            "Release signing credentials are required in CI. Set KEYSTORE_PASSWORD, " +
-                "KEYSTORE_ENTRY_ALIAS, and KEYSTORE_ENTRY_PASSWORD, or pass -PsignAsDebug for debug signing."
-        )
-    }
-    val releaseSigningConfig = if (signAsDebug || !hasReleaseSigningCredentials) {
-        signingConfigs.getByName("debug")
-    } else {
-        signingConfigs.create("release") {
+
+    val releaseSigningConfig = when {
+        signAsDebug -> signingConfigs.getByName("debug")
+        hasReleaseSigningCredentials -> signingConfigs.create("release") {
             storeFile = keystoreFile
             storePassword = keystorePassword
             keyAlias = keystoreEntryAlias
             keyPassword = keystoreEntryPassword
         }
+        else -> null
     }
 
     buildTypes {
