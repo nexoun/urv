@@ -1,0 +1,106 @@
+name: Build release unsigned APKs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: build-release-apks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build APKs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        id: setup-java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set Gradle Java Home
+        run: echo "ORG_GRADLE_JAVA_HOME=${{ steps.setup-java.outputs.path }}" >> "$GITHUB_ENV"
+
+      - name: Cache Gradle
+        uses: burrunan/gradle-cache-action@v3.0.3
+
+      - name: Run JVM unit tests
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./gradlew \
+            -Dorg.gradle.java.home="${{ steps.setup-java.outputs.path }}" \
+            --no-daemon \
+            :app:testDebugUnitTest
+
+      - name: Build release APKs
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./gradlew \
+            -Dorg.gradle.java.home="${{ steps.setup-java.outputs.path }}" \
+            --no-daemon \
+            :app:assembleRelease \
+            :revanced.v21-runtime-plugin:assembleRelease
+
+      - name: Collect and validate APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          apk_dir="app/build/outputs/apk/release"
+          plugin="revanced.v21-runtime-plugin/build/outputs/apk/release/revanced.v21-plugin.apk"
+
+          shopt -s nullglob
+          manager_apks=(
+            "${apk_dir}"/universal-revanced-manager-v*-universal.apk
+            "${apk_dir}"/universal-revanced-manager-v*-arm64-v8a.apk
+            "${apk_dir}"/universal-revanced-manager-v*-armeabi-v7a.apk
+            "${apk_dir}"/universal-revanced-manager-v*-x86.apk
+            "${apk_dir}"/universal-revanced-manager-v*-x86_64.apk
+          )
+
+          if [[ "${#manager_apks[@]}" -ne 5 ]]; then
+            echo "Expected exactly 5 manager APKs, found ${#manager_apks[@]}." >&2
+            find "$apk_dir" -maxdepth 1 -type f -name '*.apk' -print >&2 || true
+            exit 1
+          fi
+
+          if [[ ! -f "$plugin" ]]; then
+            echo "Missing runtime plugin APK: $plugin" >&2
+            exit 1
+          fi
+
+          # Ensure each expected architecture exists exactly once.
+          for arch in universal arm64-v8a armeabi-v7a x86 x86_64; do
+            matches=("${apk_dir}"/universal-revanced-manager-v*-"${arch}".apk)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "Expected exactly one APK for ${arch}, found ${#matches[@]}." >&2
+              exit 1
+            fi
+          done
+
+          echo "Validated manager APKs:"
+          printf ' - %s\n' "${manager_apks[@]}"
+          echo "Validated runtime plugin: $plugin"
+
+      - name: Upload release APK artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: urv-release-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/release/output-metadata.json
+            revanced.v21-runtime-plugin/build/outputs/apk/release/revanced.v21-plugin.apk
