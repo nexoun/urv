@@ -32,6 +32,7 @@ import app.urv.manager.domain.installer.InstallerManager
 import app.urv.manager.domain.installer.installerTokenMatchesPatchMode
 import app.urv.manager.domain.installer.shouldApplyProfileInstallerPreference
 import app.urv.manager.domain.manager.PreferencesManager
+import app.urv.manager.domain.manager.DownloadUrlResolver
 import app.urv.manager.domain.repository.DownloadedAppRepository
 import app.urv.manager.domain.repository.DownloaderPluginRepository
 import app.urv.manager.domain.repository.InstalledAppRepository
@@ -141,6 +142,12 @@ class SelectedAppInfoViewModel(
     val apkDownloadHelpers = pluginsRepository.trustedApkDownloadHelpers
     val desiredVersion = input.app.version
     val packageName = input.app.packageName
+    private val downloadUrlResolver = DownloadUrlResolver()
+    private val _isResolvingDownloadPage = MutableStateFlow(false)
+    val isResolvingDownloadPage = _isResolvingDownloadPage.asStateFlow()
+    private val _downloadPageResolution = MutableStateFlow<MatchingApkPage?>(null)
+    val downloadPageResolution = _downloadPageResolution.asStateFlow()
+    private var downloadPageResolutionJob: Job? = null
     private val profileId = input.profileId
     private val sourceEntryKey = input.sourceEntryKey
     private val requiresSourceSelection = input.requiresSourceSelection
@@ -365,6 +372,58 @@ class SelectedAppInfoViewModel(
     }
 
     data class RemovedPatchesNotice(val patchNames: List<String>)
+
+    data class MatchingApkPage(
+        val version: String?,
+        val url: String,
+        val isFallbackSearch: Boolean
+    )
+
+    /** Resolve a download page for the current patch-target version without downloading the APK. */
+    fun findMatchingApk() {
+        if (_isResolvingDownloadPage.value) return
+
+        val targetsAllVersions =
+            preferredBundleAllVersionsFlow.value && preferredBundleUidFlow.value != null
+        val targetVersion = if (targetsAllVersions) {
+            null
+        } else {
+            preferredBundleOverrideFlow.value?.takeIf(String::isNotBlank)
+                ?: preferredBundleVersionFlow.value?.takeIf(String::isNotBlank)
+                ?: selectionRecommendedVersionFlow.value?.takeIf(String::isNotBlank)
+                ?: desiredVersion?.takeIf(String::isNotBlank)
+        }
+
+        downloadPageResolutionJob?.cancel()
+        _downloadPageResolution.value = null
+        _isResolvingDownloadPage.value = true
+        downloadPageResolutionJob = viewModelScope.launch {
+            try {
+                val resolution = downloadUrlResolver.resolve(packageName, targetVersion)
+                _downloadPageResolution.value = MatchingApkPage(
+                    version = targetVersion,
+                    url = resolution.url,
+                    isFallbackSearch = resolution.isFallbackSearch
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(TAG, "Failed to resolve a matching APK page", error)
+                // Keep the action useful even when the lookup request fails unexpectedly.
+                _downloadPageResolution.value = MatchingApkPage(
+                    version = targetVersion,
+                    url = downloadUrlResolver.webSearchUrl(packageName, targetVersion),
+                    isFallbackSearch = true
+                )
+            } finally {
+                _isResolvingDownloadPage.value = false
+            }
+        }
+    }
+
+    fun dismissMatchingApkPage() {
+        _downloadPageResolution.value = null
+    }
 
     var removedPatchesNotice by mutableStateOf<RemovedPatchesNotice?>(null)
         private set

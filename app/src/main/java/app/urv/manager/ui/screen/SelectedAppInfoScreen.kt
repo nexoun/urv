@@ -1,5 +1,7 @@
 package app.urv.manager.ui.screen
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.pm.PackageInfo
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -104,6 +106,7 @@ import app.urv.manager.util.Options
 import app.urv.manager.util.PatchSelection
 import app.urv.manager.util.enabled
 import app.urv.manager.util.isAllowedApkFile
+import app.urv.manager.util.openUrl
 import app.urv.manager.util.toast
 import app.urv.manager.util.transparentListItemColors
 import java.util.Locale
@@ -135,12 +138,77 @@ fun SelectedAppInfoScreen(
     val selectedBundleOverride by vm.selectedBundleVersionOverrideFlow.collectAsStateWithLifecycle(null)
     val bundleTargetsAllVersions by vm.preferredBundleTargetsAllVersionsFlow.collectAsStateWithLifecycle(false)
     val preferredBundleVersion by vm.preferredBundleVersionFlow.collectAsStateWithLifecycle(null)
+    val selectionRecommendedVersion by vm.selectionRecommendedVersionFlow.collectAsStateWithLifecycle(null)
     val bundleRecommendationDetails by vm.bundleRecommendationDetailsFlow.collectAsStateWithLifecycle(emptyList())
+    val isResolvingDownloadPage by vm.isResolvingDownloadPage.collectAsStateWithLifecycle()
+    val matchingApkPage by vm.downloadPageResolution.collectAsStateWithLifecycle(null)
     var showBundleRecommendationDialog by rememberSaveable { mutableStateOf(false) }
     var showMixedBundleDialog by rememberSaveable { mutableStateOf(false) }
     var showMixedRevancedPatcherDialog by rememberSaveable { mutableStateOf(false) }
     var showPatchSummaryDialog by rememberSaveable { mutableStateOf(false) }
     var showPatchModeDialog by rememberSaveable { mutableStateOf(false) }
+
+    matchingApkPage?.let { result ->
+        val destination = runCatching { java.net.URI(result.url).host }
+            .getOrNull()
+            ?.removePrefix("www.")
+            ?: result.url
+        AlertDialog(
+            onDismissRequest = vm::dismissMatchingApkPage,
+            title = {
+                CenteredDialogTitle(stringResource(R.string.find_matching_apk_dialog_title))
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        stringResource(
+                            R.string.find_matching_apk_target_version,
+                            result.version?.let { "v$it" }
+                                ?: stringResource(R.string.find_matching_apk_any_version)
+                        )
+                    )
+                    Text(stringResource(R.string.find_matching_apk_destination, destination))
+                    Text(
+                        result.url,
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (result.isFallbackSearch) {
+                        Text(
+                            stringResource(R.string.find_matching_apk_fallback_warning),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val opened = runCatching { context.openUrl(result.url) }
+                            .onFailure {
+                                context.toast(context.getString(R.string.find_matching_apk_open_failed))
+                            }
+                            .isSuccess
+                        if (opened) vm.dismissMatchingApkPage()
+                    }
+                ) {
+                    Text(stringResource(R.string.find_matching_apk_open_page))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        context.getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(ClipData.newPlainText("Download page URL", result.url))
+                        context.toast(context.getString(R.string.find_matching_apk_link_copied))
+                    }
+                ) {
+                    Text(stringResource(R.string.find_matching_apk_copy_link))
+                }
+            }
+        )
+    }
 
     vm.removedPatchesNotice?.let { notice ->
         AlertDialog(
@@ -188,6 +256,14 @@ fun SelectedAppInfoScreen(
     val customBackgroundImageUri by vm.prefs.customBackgroundImageUri.getAsState()
     val useCardStylePageItems = customBackgroundImageUri.isNotBlank()
     val bundleRecommendationsEnabled = allowIncompatiblePatches && !suggestedVersionSafeguard
+    val downloadTargetVersion = if (bundleTargetsAllVersions && selectedBundleUid != null) {
+        null
+    } else {
+        selectedBundleOverride?.takeUnless { it.isBlank() }
+            ?: preferredBundleVersion?.takeUnless { it.isBlank() }
+            ?: selectionRecommendedVersion?.takeUnless { it.isBlank() }
+            ?: vm.desiredVersion?.takeUnless { it.isBlank() }
+    }
     val patches = vm.getPatches(bundles, allowIncompatiblePatches)
     val selectedPatchCount = patches.values.sumOf { it.size }
     val downloadedApps by vm.downloadedApps.collectAsStateWithLifecycle(emptyList())
@@ -447,7 +523,6 @@ fun SelectedAppInfoScreen(
 
         if (vm.showSourceSelector) {
             val requiredVersion by vm.requiredVersion.collectAsStateWithLifecycle(null)
-            val selectionRecommendedVersion by vm.selectionRecommendedVersionFlow.collectAsStateWithLifecycle(null)
             val effectiveVersion =
                 if (bundleTargetsAllVersions && selectedBundleUid != null) null
                 else selectedBundleOverride?.takeUnless { it.isBlank() }
@@ -636,6 +711,21 @@ fun SelectedAppInfoScreen(
                 onClick = {
                     vm.showSourceSelector()
                 }
+            )
+            PageItem(
+                R.string.find_matching_apk_item,
+                when {
+                    isResolvingDownloadPage -> stringResource(R.string.find_matching_apk_searching)
+                    downloadTargetVersion.isNullOrBlank() -> stringResource(
+                        R.string.find_matching_apk_description_any
+                    )
+                    else -> stringResource(
+                        R.string.find_matching_apk_description,
+                        downloadTargetVersion
+                    )
+                },
+                useCardStyle = useCardStylePageItems,
+                onClick = vm::findMatchingApk
             )
             error?.let {
                 Text(
