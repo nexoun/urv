@@ -109,7 +109,7 @@ dependencies {
     implementation("com.android.tools.build:apkzlib:8.5.2")
     compileOnly("com.google.guava:guava:32.1.2-jre")
     implementation(libs.xpp3)
-    apkEditorLib(files("$rootDir/libs/APKEditor-1.4.7.jar"))
+    apkEditorLib(files("$rootDir/libs/APKEditor-1.4.9.jar"))
     implementation(files(strippedApkEditorLib))
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation(libs.kotlinx.coroutines.android)
